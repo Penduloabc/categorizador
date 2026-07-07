@@ -15,13 +15,13 @@ jobs:
       max-parallel: 3       # tope para no golpear el DLE con demasiadas requests simultáneas
       matrix:
         archivo:
-          - vocabulario_general_1.txt
-          - vocabulario_general_2.txt
-          - vocabulario_general_3.txt
-          - vocabulario_general_4.txt
-          - vocabulario_general_5.txt
-          - vocabulario_general_6.txt
-          - vocabulario_general_7.txt
+          - vocabulario_general_01.txt
+          - vocabulario_general_02.txt
+          - vocabulario_general_03.txt
+          - vocabulario_general_04.txt
+          - vocabulario_general_05.txt
+          - vocabulario_general_06.txt
+          - vocabulario_general_07.txt
 
     steps:
       - name: Clonar repositorio
