@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       fail-fast: false     # si un TXT falla, los otros 6 siguen corriendo
-      max-parallel: 3       # tope para no golpear el DLE con demasiadas requests simultáneas
+      max-parallel: 7       # los 7 corren simultáneos (sin bloqueos observados previamente en Colab)
       matrix:
         archivo:
           - vocabulario_general_01.txt
