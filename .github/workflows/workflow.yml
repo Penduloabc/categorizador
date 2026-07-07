@@ -38,6 +38,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends /tmp/chrome.deb
 
+      - name: Eliminar chromedriver preinstalado incompatible
+        run: |
+          sudo rm -f /usr/bin/chromedriver /usr/local/bin/chromedriver
+          echo "chromedriver preinstalado eliminado; Selenium Manager descargará la versión correcta automáticamente."
+
       - name: Instalar dependencias Python
         run: |
           pip install -q -U selenium gspread google-auth google-api-python-client
