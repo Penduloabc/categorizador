@@ -8,7 +8,7 @@ on:
 jobs:
   procesar:
     runs-on: ubuntu-latest
-    timeout-minutes: 20   # ← reducido temporalmente para la prueba (original: 360)
+    timeout-minutes: 360  # 6 horas, el máximo por job
 
     strategy:
       fail-fast: false     # si un TXT falla, los otros 6 siguen corriendo
@@ -16,12 +16,12 @@ jobs:
       matrix:
         archivo:
           - vocabulario_general_01.txt
-          # - vocabulario_general_02.txt   # ← comentados temporalmente para la prueba
-          # - vocabulario_general_03.txt   #   (restaurar los 7 después de confirmar que funciona)
-          # - vocabulario_general_04.txt
-          # - vocabulario_general_05.txt
-          # - vocabulario_general_06.txt
-          # - vocabulario_general_07.txt
+          - vocabulario_general_02.txt
+          - vocabulario_general_03.txt
+          - vocabulario_general_04.txt
+          - vocabulario_general_05.txt
+          - vocabulario_general_06.txt
+          - vocabulario_general_07.txt
 
     steps:
       - name: Clonar repositorio
@@ -51,5 +51,6 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           CARPETA_ID: ${{ secrets.CARPETA_ID }}
+          PYTHONUNBUFFERED: "1"
         run: |
           python validador_vocabulario_rae.py --archivo "${{ matrix.archivo }}"
