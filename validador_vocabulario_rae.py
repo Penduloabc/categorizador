@@ -118,24 +118,64 @@ print('✔ Autenticación completada (Service Account).')
 
 
 # ============================================================
+# 4.1 WRAPPER DE REINTENTOS PARA LLAMADAS A LA API (Sheets/Drive)
+#     Debe definirse ANTES de cualquier llamada a Drive/Sheets, ya que
+#     las secciones 5 y 6 (localizar TXT, crear/leer la hoja) también
+#     lo usan.
+# ============================================================
+_ERRORES_TRANSITORIOS = (
+    '429', '500', '502', '503', '504',
+    'RemoteDisconnected', 'ConnectionError', 'ConnectionAborted',
+    'Connection aborted', 'Timeout', 'timed out', 'ReadTimeout',
+    'ProtocolError', 'BrokenPipeError', 'ServerNotFoundError',
+)
+
+
+def _api_call(fn, max_reintentos=5, espera_inicial=15, etiqueta='API'):
+    """
+    Wrapper genérico de reintentos con backoff exponencial. Cubre TANTO
+    lecturas como escrituras contra Sheets/Drive (get_all_values, update,
+    append_row/append_rows, files().get/list, etc.), a diferencia del
+    _sheets_write original que solo protegía escrituras. Reintenta ante
+    errores transitorios de red o cuota; cualquier otro error se relanza
+    de inmediato (no queremos ocultar errores reales de lógica).
+    """
+    espera = espera_inicial
+    for intento in range(max_reintentos + 1):
+        try:
+            return fn()
+        except Exception as e:
+            es_transitorio = any(marca in str(e) or marca in type(e).__name__
+                                  for marca in _ERRORES_TRANSITORIOS)
+            if es_transitorio and intento < max_reintentos:
+                print(f'  [{etiqueta}] Error transitorio ({type(e).__name__}). '
+                      f'Esperando {espera}s (intento {intento+1}/{max_reintentos})...')
+                time.sleep(espera)
+                espera *= 2
+            else:
+                raise
+
+
+# ============================================================
 # 5. LOCALIZAR EL .TXT — vía API, explícito por nombre o ID
 #    (en Actions no hay "carpeta propia por cuenta"; el archivo llega
 #    como parámetro de la matriz del workflow)
 # ============================================================
 if args.archivo_id:
-    _meta = drive_service.files().get(fileId=args.archivo_id, fields='id, name').execute()
+    _meta = _api_call(lambda: drive_service.files().get(fileId=args.archivo_id, fields='id, name').execute(),
+                       etiqueta='localizar_por_id')
     _ARCHIVO_TXT_ID = _meta['id']
     NOMBRE_ARCHIVO  = _meta['name']
 else:
     if not CARPETA_ID:
         raise SystemExit('Falta CARPETA_ID en el entorno (requerido al usar --archivo por nombre)')
-    _resp_txt = drive_service.files().list(
+    _resp_txt = _api_call(lambda: drive_service.files().list(
         q=(
             f"'{CARPETA_ID}' in parents and name='{args.archivo}' "
             "and trashed=false"
         ),
         fields='files(id, name)',
-    ).execute()
+    ).execute(), etiqueta='localizar_por_nombre')
     _archivos = _resp_txt.get('files', [])
     if not _archivos:
         raise FileNotFoundError(f'No se encontró "{args.archivo}" en la carpeta {CARPETA_ID}')
@@ -147,17 +187,24 @@ _num        = _num_match.group(1) if _num_match else NOMBRE_ARCHIVO
 NOMBRE_HOJA = f'{PREFIJO_HOJA}{_num}'
 
 # Averiguar la carpeta contenedora real del archivo (para crear/ubicar la hoja ahí)
-_meta_parents = drive_service.files().get(fileId=_ARCHIVO_TXT_ID, fields='parents').execute()
+_meta_parents = _api_call(lambda: drive_service.files().get(fileId=_ARCHIVO_TXT_ID, fields='parents').execute(),
+                           etiqueta='meta_parents')
 CARPETA_ID = (_meta_parents.get('parents') or [CARPETA_ID])[0]
 
 # Descargar el .txt a un archivo local temporal
 RUTA_TXT = f'/tmp/{NOMBRE_ARCHIVO}'
-_request = drive_service.files().get_media(fileId=_ARCHIVO_TXT_ID)
-with io.FileIO(RUTA_TXT, 'wb') as _fh:
-    _downloader = MediaIoBaseDownload(_fh, _request)
-    _done = False
-    while not _done:
-        _, _done = _downloader.next_chunk()
+
+
+def _descargar_txt():
+    _request = drive_service.files().get_media(fileId=_ARCHIVO_TXT_ID)
+    with io.FileIO(RUTA_TXT, 'wb') as _fh:
+        _downloader = MediaIoBaseDownload(_fh, _request)
+        _done = False
+        while not _done:
+            _, _done = _downloader.next_chunk()
+
+
+_api_call(_descargar_txt, etiqueta='descargar_txt')
 
 print(f'  Archivo asignado : {NOMBRE_ARCHIVO}')
 print(f'  Hoja de cálculo  : {NOMBRE_HOJA}')
@@ -222,39 +269,6 @@ with open(RUTA_TXT, encoding='utf-8') as f:
 print(f'Total de candidatos cargados desde {NOMBRE_ARCHIVO}: {len(candidatos)}')
 print('Primeros 5:', candidatos[:5])
 print('Últimos 5: ', candidatos[-5:])
-
-
-_ERRORES_TRANSITORIOS = (
-    '429', '500', '502', '503', '504',
-    'RemoteDisconnected', 'ConnectionError', 'ConnectionAborted',
-    'Connection aborted', 'Timeout', 'timed out', 'ReadTimeout',
-    'ProtocolError', 'BrokenPipeError', 'ServerNotFoundError',
-)
-
-
-def _api_call(fn, max_reintentos=5, espera_inicial=15, etiqueta='API'):
-    """
-    Wrapper genérico de reintentos con backoff exponencial. Cubre TANTO
-    lecturas como escrituras contra Sheets/Drive (get_all_values, update,
-    append_row/append_rows, files().get/list, etc.), a diferencia del
-    _sheets_write original que solo protegía escrituras. Reintenta ante
-    errores transitorios de red o cuota; cualquier otro error se relanza
-    de inmediato (no queremos ocultar errores reales de lógica).
-    """
-    espera = espera_inicial
-    for intento in range(max_reintentos + 1):
-        try:
-            return fn()
-        except Exception as e:
-            es_transitorio = any(marca in str(e) or marca in type(e).__name__
-                                  for marca in _ERRORES_TRANSITORIOS)
-            if es_transitorio and intento < max_reintentos:
-                print(f'  [{etiqueta}] Error transitorio ({type(e).__name__}). '
-                      f'Esperando {espera}s (intento {intento+1}/{max_reintentos})...')
-                time.sleep(espera)
-                espera *= 2
-            else:
-                raise
 
 
 def leer_progreso(progreso_ws):
