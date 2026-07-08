@@ -166,47 +166,49 @@ print(f'  Hoja de cálculo  : {NOMBRE_HOJA}')
 # ============================================================
 # 6. HOJA DE CÁLCULO Y PESTAÑA DE PROGRESO (idéntico al notebook original)
 # ============================================================
-_resp_hojas = drive_service.files().list(
+_resp_hojas = _api_call(lambda: drive_service.files().list(
     q=(
         f"'{CARPETA_ID}' in parents and name='{NOMBRE_HOJA}' "
         "and mimeType='application/vnd.google-apps.spreadsheet' "
         "and trashed=false"
     ),
     fields='files(id, name)',
-).execute()
+).execute(), etiqueta='listar_hojas')
 _hojas_existentes = _resp_hojas.get('files', [])
 
 if _hojas_existentes:
-    sh = gc.open_by_key(_hojas_existentes[0]['id'])
+    sh = _api_call(lambda: gc.open_by_key(_hojas_existentes[0]['id']), etiqueta='abrir_hoja')
     print(f'✔ Hoja existente reutilizada: {NOMBRE_HOJA}')
 else:
-    sh = gc.create(NOMBRE_HOJA)
+    sh = _api_call(lambda: gc.create(NOMBRE_HOJA), etiqueta='crear_hoja')
     _file_id = sh.id
-    _meta = drive_service.files().get(fileId=_file_id, fields='parents').execute()
+    _meta = _api_call(lambda: drive_service.files().get(fileId=_file_id, fields='parents').execute(),
+                       etiqueta='meta_hoja')
     _padres_actuales = ','.join(_meta.get('parents', []))
-    drive_service.files().update(
+    _api_call(lambda: drive_service.files().update(
         fileId=_file_id,
         addParents=CARPETA_ID,
         removeParents=_padres_actuales,
         fields='id, parents',
-    ).execute()
+    ).execute(), etiqueta='mover_hoja')
     print(f'✔ Hoja creada y movida a la carpeta del proyecto: {NOMBRE_HOJA}')
 
 worksheet = sh.sheet1
-valores = worksheet.get_all_values()
+valores = _api_call(lambda: worksheet.get_all_values(), etiqueta='leer_headers')
 hoja_vacia = (not valores) or all(not any(fila) for fila in valores)
 if hoja_vacia:
-    worksheet.append_row(['Palabra', 'Enlace', 'Abreviaturas', 'Sinónimos', 'Antónimos'])
+    _api_call(lambda: worksheet.append_row(['Palabra', 'Enlace', 'Abreviaturas', 'Sinónimos', 'Antónimos']),
+              etiqueta='crear_headers')
     print('Encabezados creados (5 columnas).')
 else:
     print('La hoja ya tenía contenido; no se sobrescriben encabezados.')
 
 try:
-    progreso_ws = sh.worksheet('Progreso')
+    progreso_ws = _api_call(lambda: sh.worksheet('Progreso'), max_reintentos=2, etiqueta='buscar_progreso')
 except gspread.WorksheetNotFound:
-    progreso_ws = sh.add_worksheet(title='Progreso', rows=5, cols=2)
-    progreso_ws.append_row(['ultimo_indice', 'descripcion'])
-    progreso_ws.append_row([0, 'Inicio'])
+    progreso_ws = _api_call(lambda: sh.add_worksheet(title='Progreso', rows=5, cols=2), etiqueta='crear_progreso')
+    _api_call(lambda: progreso_ws.append_row(['ultimo_indice', 'descripcion']), etiqueta='header_progreso')
+    _api_call(lambda: progreso_ws.append_row([0, 'Inicio']), etiqueta='init_progreso')
 
 print('Conectado a la hoja:', sh.title)
 
@@ -222,14 +224,32 @@ print('Primeros 5:', candidatos[:5])
 print('Últimos 5: ', candidatos[-5:])
 
 
-def _sheets_write(fn, max_reintentos=4):
-    espera = 60
+_ERRORES_TRANSITORIOS = (
+    '429', '500', '502', '503', '504',
+    'RemoteDisconnected', 'ConnectionError', 'ConnectionAborted',
+    'Connection aborted', 'Timeout', 'timed out', 'ReadTimeout',
+    'ProtocolError', 'BrokenPipeError', 'ServerNotFoundError',
+)
+
+
+def _api_call(fn, max_reintentos=5, espera_inicial=15, etiqueta='API'):
+    """
+    Wrapper genérico de reintentos con backoff exponencial. Cubre TANTO
+    lecturas como escrituras contra Sheets/Drive (get_all_values, update,
+    append_row/append_rows, files().get/list, etc.), a diferencia del
+    _sheets_write original que solo protegía escrituras. Reintenta ante
+    errores transitorios de red o cuota; cualquier otro error se relanza
+    de inmediato (no queremos ocultar errores reales de lógica).
+    """
+    espera = espera_inicial
     for intento in range(max_reintentos + 1):
         try:
             return fn()
         except Exception as e:
-            if '429' in str(e) and intento < max_reintentos:
-                print(f'  [429] Cuota de Sheets alcanzada. '
+            es_transitorio = any(marca in str(e) or marca in type(e).__name__
+                                  for marca in _ERRORES_TRANSITORIOS)
+            if es_transitorio and intento < max_reintentos:
+                print(f'  [{etiqueta}] Error transitorio ({type(e).__name__}). '
                       f'Esperando {espera}s (intento {intento+1}/{max_reintentos})...')
                 time.sleep(espera)
                 espera *= 2
@@ -238,7 +258,7 @@ def _sheets_write(fn, max_reintentos=4):
 
 
 def leer_progreso(progreso_ws):
-    vals = progreso_ws.get_all_values()
+    vals = _api_call(lambda: progreso_ws.get_all_values(), etiqueta='leer_progreso')
     if len(vals) < 2 or not vals[1][0]:
         return 0
     return int(vals[1][0])
@@ -246,10 +266,10 @@ def leer_progreso(progreso_ws):
 
 def guardar_progreso(progreso_ws, indice, forzar=False, cada=10):
     if forzar or indice % cada == 0:
-        _sheets_write(lambda: progreso_ws.update(
+        _api_call(lambda: progreso_ws.update(
             [[indice, f'Siguiente a procesar: candidato #{indice+1}']],
             'A2:B2'
-        ))
+        ), etiqueta='guardar_progreso')
 
 
 ABREVIATURAS_COMPUESTAS = [
@@ -323,11 +343,21 @@ def construir_enlace(palabra):
     return f'https://dle.rae.es/{quote(palabra)}'
 
 
-def verificar_en_dle(driver, palabra):
+def verificar_en_dle(driver, palabra, medicion=None):
     enlace = construir_enlace(palabra)
+
+    _t0 = time.time()
     driver.get(enlace)
+    _t1 = time.time()
     pausa(1.5, 2.0)
+    _t2 = time.time()
     scroll_aleatorio(driver)
+    _t3 = time.time()
+
+    if medicion is not None:
+        medicion['dle']    = _t1 - _t0
+        medicion['pausa']  = _t2 - _t1
+        medicion['scroll'] = _t3 - _t2
 
     contenido    = driver.find_element('tag name', 'body').text
     enlace_final = driver.current_url
@@ -349,6 +379,14 @@ PAUSA_LARGA_CADA   = 25
 BLOQUES_POR_SESION = 25
 PAUSA_ENTRE_MIN    = 3
 PAUSA_ENTRE_MAX    = 5
+TAMANO_LOTE        = 25   # palabras acumuladas antes de escribir a Sheets en un solo append_rows
+
+# ------------------------------------------------------------------
+# MEDICIÓN TEMPORAL (TEMPORAL — remover o comentar cuando ya no se
+# necesite diagnosticar tiempos; no afecta la lógica del script).
+# ------------------------------------------------------------------
+_MEDIR_TIEMPOS = True
+_tiempos_globales = {'dle': 0.0, 'pausa': 0.0, 'scroll': 0.0, 'sheets': 0.0, 'otros': 0.0}
 
 
 def _pausa_entre_bloques(n_bloque, total_bloques):
@@ -375,49 +413,101 @@ def _ejecutar_un_bloque():
     if inicio >= len(candidatos):
         return 0, False
 
-    existentes = {fila[0] for fila in worksheet.get_all_values()[1:] if fila}
+    existentes = {fila[0] for fila in
+                  _api_call(lambda: worksheet.get_all_values(), etiqueta='leer_existentes')[1:] if fila}
     print(f'► Candidatos {inicio+1}–{fin} de {len(candidatos)} '
           f'({len(candidatos) - fin} pendientes tras este bloque)')
 
-    palabras_nuevas   = 0
-    procesados_bloque = 0
+    palabras_nuevas    = 0
+    procesados_bloque  = 0
+    lote               = []   # filas [palabra, enlace, abrevs, sins, ants] pendientes de escribir
+    tiempos_bloque     = {'dle': 0.0, 'pausa': 0.0, 'scroll': 0.0, 'sheets': 0.0}
+    n_palabras_medidas = 0
+
+    def _flush_lote(indice_hasta):
+        """Escribe el lote acumulado en UNA sola llamada (append_rows) y solo
+        entonces avanza el checkpoint de progreso a indice_hasta. Así el
+        progreso guardado siempre coincide con lo que realmente quedó escrito
+        en la hoja, aunque el job se corte a mitad de un lote."""
+        nonlocal lote
+        if lote:
+            _ts = time.time()
+            _api_call(lambda: worksheet.append_rows(lote, value_input_option='RAW'),
+                      etiqueta='flush_lote')
+            _te = time.time()
+            if _MEDIR_TIEMPOS:
+                tiempos_bloque['sheets']    += (_te - _ts)
+                _tiempos_globales['sheets'] += (_te - _ts)
+                print(f'  [tiempo] flush de {len(lote)} filas a Sheets: {_te - _ts:.2f}s')
+            lote = []
+        guardar_progreso(progreso_ws, indice_hasta, forzar=True)
 
     for i in range(inicio, fin):
         palabra = candidatos[i]
 
         if palabra in existentes:
             print(f'[{i+1}] "{palabra}" ya existe — omitida.')
-            guardar_progreso(progreso_ws, i + 1, forzar=False)
             procesados_bloque += 1
             continue
 
+        medicion = {} if _MEDIR_TIEMPOS else None
         try:
-            en_dle, abrevs, sins, ants, enlace, enlace_final = verificar_en_dle(driver, palabra)
+            en_dle, abrevs, sins, ants, enlace, enlace_final = verificar_en_dle(
+                driver, palabra, medicion=medicion)
         except Exception as e:
             print(f'[{i+1}] Error con "{palabra}": {e}')
-            guardar_progreso(progreso_ws, i + 1, forzar=True)
+            # Escribimos primero lo acumulado para no perderlo, y luego
+            # marcamos este candidato como procesado (se omite en el futuro).
+            _flush_lote(i + 1)
             procesados_bloque += 1
             continue
 
-        _sheets_write(lambda p=palabra, l=enlace, a=abrevs, s=sins, n=ants:
-                      worksheet.append_row([p, l, a, s, n]))
+        lote.append([palabra, enlace, abrevs, sins, ants])
         existentes.add(palabra)
         palabras_nuevas += 1
+
+        if _MEDIR_TIEMPOS and medicion:
+            tiempos_bloque['dle']       += medicion.get('dle', 0.0)
+            tiempos_bloque['pausa']     += medicion.get('pausa', 0.0)
+            tiempos_bloque['scroll']    += medicion.get('scroll', 0.0)
+            _tiempos_globales['dle']    += medicion.get('dle', 0.0)
+            _tiempos_globales['pausa']  += medicion.get('pausa', 0.0)
+            _tiempos_globales['scroll'] += medicion.get('scroll', 0.0)
+            n_palabras_medidas += 1
 
         icono  = '✔' if en_dle else '✘'
         prev_a = abrevs[:40] + ('…' if len(abrevs) > 40 else '')
         prev_s = sins[:35]   + ('…' if len(sins) > 35   else '')
-        print(f'[{i+1}] {icono} {palabra}  |  {prev_a}  |  Sin: {prev_s}')
+        sufijo_tiempo = ''
+        if _MEDIR_TIEMPOS and medicion:
+            sufijo_tiempo = (f'  (dle:{medicion.get("dle",0):.2f}s '
+                              f'pausa:{medicion.get("pausa",0):.2f}s '
+                              f'scroll:{medicion.get("scroll",0):.2f}s)')
+        print(f'[{i+1}] {icono} {palabra}  |  {prev_a}  |  Sin: {prev_s}{sufijo_tiempo}')
 
-        guardar_progreso(progreso_ws, i + 1, forzar=False)
         procesados_bloque += 1
+
+        if len(lote) >= TAMANO_LOTE:
+            _flush_lote(i + 1)
 
         if procesados_bloque % PAUSA_LARGA_CADA == 0:
             pausa_larga()
 
-    guardar_progreso(progreso_ws, fin, forzar=True)
+    # Remanente del lote al cierre del bloque (si el bloque no cerró justo
+    # en un múltiplo de TAMANO_LOTE).
+    _flush_lote(fin)
+
     hay_mas = fin < len(candidatos)
     print(f'Bloque terminado. Palabras nuevas: {palabras_nuevas}.')
+
+    if _MEDIR_TIEMPOS and n_palabras_medidas:
+        print(f'  [tiempo] Resumen bloque — '
+              f'dle: {tiempos_bloque["dle"]:.1f}s (prom {tiempos_bloque["dle"]/n_palabras_medidas:.2f}s/palabra) | '
+              f'pausa: {tiempos_bloque["pausa"]:.1f}s (prom {tiempos_bloque["pausa"]/n_palabras_medidas:.2f}s/palabra) | '
+              f'scroll: {tiempos_bloque["scroll"]:.1f}s | '
+              f'sheets (lotes): {tiempos_bloque["sheets"]:.1f}s '
+              f'({tiempos_bloque["sheets"]/n_palabras_medidas:.3f}s/palabra equivalente)')
+
     return palabras_nuevas, hay_mas
 
 
@@ -476,3 +566,18 @@ if actual < len(candidatos):
     print('El workflow puede volver a ejecutarse (manual o programado) y retomará automáticamente.')
 else:
     print('\nEste archivo quedó completo.')
+
+if _MEDIR_TIEMPOS and total > 0:
+    print(f'\n{_SEP}')
+    print('[tiempo] RESUMEN GLOBAL DE LA SESIÓN (medición temporal — temporal)')
+    for _clave, _etiqueta in (('dle', 'Carga DLE'), ('pausa', 'Pausa deliberada'),
+                               ('scroll', 'Scroll'), ('sheets', 'Escritura a Sheets (lotes)')):
+        _seg = _tiempos_globales[_clave]
+        print(f'  {_etiqueta:28s}: {_seg:8.1f}s total | {_seg/total:6.3f}s/palabra promedio')
+    _suma = sum(_tiempos_globales.values())
+    print(f'  {"Suma de componentes":28s}: {_suma:8.1f}s total | {_suma/total:6.3f}s/palabra promedio')
+    print(f'  {"Duración real de sesión":28s}: {duracion.total_seconds():8.1f}s '
+          f'({duracion.total_seconds()/total:6.3f}s/palabra efectivo)')
+    _no_explicado = duracion.total_seconds() - _suma
+    print(f'  {"No explicado (reintentos, pausas entre bloques, pausas largas, overhead)":74s}: '
+          f'{_no_explicado:8.1f}s')
