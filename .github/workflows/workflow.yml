@@ -12,16 +12,17 @@ jobs:
 
     strategy:
       fail-fast: false     # si un TXT falla, los otros 6 siguen corriendo
-      max-parallel: 7       # los 7 corren simultáneos (sin bloqueos observados previamente en Colab)
+      max-parallel: 3       # tope para no golpear el DLE con demasiadas requests simultáneas
       matrix:
         archivo:
           - vocabulario_general_01.txt
-          - vocabulario_general_02.txt
-          - vocabulario_general_03.txt
-          - vocabulario_general_04.txt
-          - vocabulario_general_05.txt
-          - vocabulario_general_06.txt
-          - vocabulario_general_07.txt
+          # - vocabulario_general_02.txt
+          # - vocabulario_general_03.txt
+          # - vocabulario_general_04.txt
+          # - vocabulario_general_05.txt
+          # - vocabulario_general_06.txt
+          # - vocabulario_general_07.txt
+          # ↑ descomenta el resto una vez validada la prueba con _01
 
     steps:
       - name: Clonar repositorio
@@ -38,11 +39,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends /tmp/chrome.deb
 
-      - name: Eliminar chromedriver preinstalado incompatible
-        run: |
-          sudo rm -f /usr/bin/chromedriver /usr/local/bin/chromedriver
-          echo "chromedriver preinstalado eliminado; Selenium Manager descargará la versión correcta automáticamente."
-
       - name: Instalar dependencias Python
         run: |
           pip install -q -U selenium gspread google-auth google-api-python-client
@@ -51,6 +47,5 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           CARPETA_ID: ${{ secrets.CARPETA_ID }}
-          PYTHONUNBUFFERED: "1"
         run: |
           python validador_vocabulario_rae.py --archivo "${{ matrix.archivo }}"
