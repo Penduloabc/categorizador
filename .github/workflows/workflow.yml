@@ -15,13 +15,13 @@ jobs:
       max-parallel: 7       # tope para no golpear el DLE con demasiadas requests simultáneas
       matrix:
         archivo:
-          - vocabulario_general_01.txt
-          - vocabulario_general_02.txt
-          - vocabulario_general_03.txt
-          - vocabulario_general_04.txt
+          # - vocabulario_general_01.txt
+          # - vocabulario_general_02.txt
+          # - vocabulario_general_03.txt
+          # - vocabulario_general_04.txt
           - vocabulario_general_05.txt
           - vocabulario_general_06.txt
-          - vocabulario_general_07.txt
+          # - vocabulario_general_07.txt
           # ↑ descomenta el resto una vez validada la prueba con _01
 
     steps:
